@@ -231,7 +231,12 @@ CV_IMPL CvCapture * cvCreateCameraCapture (int index)
             if (capture)
                 return capture;
 #endif
-#if defined HAVE_LIBV4L || defined HAVE_CAMV4L || defined HAVE_CAMV4L2 || defined HAVE_VIDEOIO
+#if defined HAVE_CAMV4L2 || defined HAVE_VIDEOIO
+            capture = cvCreateCameraCapture_V4L2 (index);
+            if (capture)
+                return capture;
+#endif
+#if defined HAVE_LIBV4L || defined HAVE_CAMV4L
             capture = cvCreateCameraCapture_V4L (index);
             if (capture)
                 return capture;

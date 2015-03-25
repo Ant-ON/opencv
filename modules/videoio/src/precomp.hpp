@@ -101,6 +101,7 @@ struct CvVideoWriter
 };
 
 CvCapture * cvCreateCameraCapture_V4L( int index );
+CvCapture * cvCreateCameraCapture_V4L2( int index );
 CvCapture * cvCreateCameraCapture_DC1394( int index );
 CvCapture * cvCreateCameraCapture_DC1394_2( int index );
 CvCapture* cvCreateCameraCapture_MIL( int index );
