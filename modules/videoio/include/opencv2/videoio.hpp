@@ -127,7 +127,8 @@ enum { CAP_PROP_POS_MSEC       =0,
        CAP_PROP_TILT          =34,
        CAP_PROP_ROLL          =35,
        CAP_PROP_IRIS          =36,
-       CAP_PROP_SETTINGS      =37
+       CAP_PROP_SETTINGS      =37,
+       CAP_PROP_AUTO_FOCUS    =38, // focus control done by camera
      };
 
 
