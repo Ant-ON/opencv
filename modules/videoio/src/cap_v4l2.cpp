@@ -389,6 +389,7 @@ typedef struct CvCaptureCAM_V4L
 } CvCaptureCAM_V4L;
 
 static void v4l2_close(CvCaptureCAM_V4L* capture);
+static void v4l2_try_read_frame(CvCaptureCAM_V4L* capture);
 
 /*
  * Turn a YUV4:2:0 block into an RGB block
@@ -1092,7 +1093,7 @@ static int sonix_decompress(int width, int height, unsigned char *inp,
     return 0;
 }
 
-static int v4l2_req_buf(CvCaptureCAM_V4L* capture)
+static int v4l2_request_buf(CvCaptureCAM_V4L* capture)
 {
     unsigned int min;
 
@@ -1111,7 +1112,7 @@ static int v4l2_req_buf(CvCaptureCAM_V4L* capture)
 
     unsigned int buffer_number = DEFAULT_V4L_BUFFERS;
 
-    try_again:
+try_again:
 
     capture->req.count = buffer_number;
     capture->req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -1172,9 +1173,9 @@ static int v4l2_req_buf(CvCaptureCAM_V4L* capture)
 
         capture->buffers[capture->n_buffers].length = buf.length;
         capture->buffers[capture->n_buffers].start = mmap(
-        NULL /* start anywhere */, buf.length,
-        PROT_READ | PROT_WRITE /* required */,
-        MAP_SHARED /* recommended */, capture->deviceHandle, buf.m.offset);
+				NULL /* start anywhere */, buf.length,
+				PROT_READ | PROT_WRITE /* required */,
+				MAP_SHARED /* recommended */, capture->deviceHandle, buf.m.offset);
 
         if (MAP_FAILED == capture->buffers[capture->n_buffers].start)
         {
@@ -1198,6 +1199,86 @@ static int v4l2_req_buf(CvCaptureCAM_V4L* capture)
             IPL_DEPTH_8U, 3, IPL_ORIGIN_TL, 4);
     /* Allocate space for RGBA data */
     capture->frame.imageData = (char *) cvAlloc(capture->frame.imageSize);
+
+    /* This is just a technicality, but all buffers must be filled up before any
+     staggered SYNC is applied.  SO, filler up. (see V4L HowTo) */
+    for (capture->bufferIndex = 0;
+            capture->bufferIndex < ((int) capture->req.count);
+            ++capture->bufferIndex)
+    {
+
+        struct v4l2_buffer buf;
+
+        CLEAR(buf);
+
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = (unsigned long) capture->bufferIndex;
+
+        if (-1 == ioctl(capture->deviceHandle, VIDIOC_QBUF, &buf))
+        {
+            perror("VIDIOC_QBUF");
+            return -1;
+        }
+    }
+
+    /* enable the streaming */
+    capture->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (-1 == ioctl(capture->deviceHandle, VIDIOC_STREAMON, &capture->type))
+    {
+        /* error enabling the stream */
+        perror("VIDIOC_STREAMON");
+        return -1;
+    }
+
+#if defined(V4L_ABORT_BADJPEG)
+    // skip first frame. it is often bad -- this is unnotied in traditional apps,
+    //  but could be fatal if bad jpeg is enabled
+    v4l2_try_read_frame(capture);
+#endif
+
+    /* preparation is ok */
+    capture->FirstCapture = 0;
+
+    return 0;
+}
+
+static int v4l2_release_buf(CvCaptureCAM_V4L* capture)
+{
+	capture->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	if (-1 == ioctl(capture->deviceHandle, VIDIOC_STREAMOFF,
+			&capture->type))
+	{
+		perror("Unable to stop the stream.");
+	}
+
+    for (unsigned int n_buffers = 0; n_buffers < capture->req.count;
+            ++n_buffers)
+    {
+        if (-1 == munmap(capture->buffers[n_buffers].start,
+        		capture->buffers[n_buffers].length))
+        {
+            perror("munmap");
+        }
+    }
+
+    if (capture->buffers[MAX_V4L_BUFFERS].start)
+        free(capture->buffers[MAX_V4L_BUFFERS].start);
+    capture->buffers[MAX_V4L_BUFFERS].start = NULL;
+
+    capture->n_buffers = 0;
+
+	CLEAR(capture->req);
+    capture->req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    capture->req.memory = V4L2_MEMORY_MMAP;
+    capture->req.count = 0;
+
+    ioctl(capture->deviceHandle, VIDIOC_REQBUFS, &capture->req);
+
+    if (capture->frame.imageData)
+        cvFree(&capture->frame.imageData);
+
+    capture->FirstCapture = 1;
 
     return 0;
 }
@@ -1300,57 +1381,11 @@ static void v4l2_try_read_frame(CvCaptureCAM_V4L* capture)
 
 static int v4l2_grab_frame(CvCaptureCAM_V4L* capture)
 {
-    if (!capture->n_buffers)
+	if (capture->FirstCapture)
     {
         /* Request buffers */
-        if (v4l2_req_buf(capture))
+        if (v4l2_request_buf(capture))
             return -1;
-    }
-
-    if (capture->FirstCapture)
-    {
-        /* Some general initialization must take place the first time through */
-
-        /* This is just a technicality, but all buffers must be filled up before any
-         staggered SYNC is applied.  SO, filler up. (see V4L HowTo) */
-
-        for (capture->bufferIndex = 0;
-                capture->bufferIndex < ((int) capture->req.count);
-                ++capture->bufferIndex)
-        {
-
-            struct v4l2_buffer buf;
-
-            CLEAR(buf);
-
-            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            buf.memory = V4L2_MEMORY_MMAP;
-            buf.index = (unsigned long) capture->bufferIndex;
-
-            if (-1 == ioctl(capture->deviceHandle, VIDIOC_QBUF, &buf))
-            {
-                perror("VIDIOC_QBUF");
-                return -1;
-            }
-        }
-
-        /* enable the streaming */
-        capture->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        if (-1 == ioctl(capture->deviceHandle, VIDIOC_STREAMON, &capture->type))
-        {
-            /* error enabling the stream */
-            perror("VIDIOC_STREAMON");
-            return -1;
-        }
-
-#if defined(V4L_ABORT_BADJPEG)
-        // skip first frame. it is often bad -- this is unnotied in traditional apps,
-        //  but could be fatal if bad jpeg is enabled
-        v4l2_try_read_frame(capture);
-#endif
-
-        /* preparation is ok */
-        capture->FirstCapture = 0;
     }
 
     v4l2_try_read_frame(capture);
@@ -1431,7 +1466,7 @@ static int v4l2_set_control(CvCaptureCAM_V4L* capture, int prop_id,
 
     /* The driver may clamp the value or return ERANGE, ignored here */
     if (-1 == ioctl(capture->deviceHandle,
-    VIDIOC_S_CTRL, &capture->control) && errno != ERANGE)
+    		VIDIOC_S_CTRL, &capture->control) && errno != ERANGE)
     {
         perror("VIDIOC_S_CTRL");
         return -1;
@@ -1558,6 +1593,10 @@ static int v4l2_reset_crop(CvCaptureCAM_V4L* capture)
 
 static int v4l2_set_video_size(CvCaptureCAM_V4L* capture, int w, int h)
 {
+	/* Release buffers */
+	if (!capture->FirstCapture)
+		v4l2_release_buf(capture);
+
     /* Reset the crop */
     v4l2_reset_crop(capture);
 
@@ -1584,10 +1623,6 @@ static int v4l2_set_video_size(CvCaptureCAM_V4L* capture, int w, int h)
 
     /* try to set framerate to 30 fps */
     v4l2_set_fps(capture, 30);
-
-    /* we need to re-initialize some things, like buffers, because the size has
-     * changed */
-    capture->FirstCapture = 1;
 
     /* Get window info again, to get the real value */
     if (-1 == ioctl(capture->deviceHandle, VIDIOC_G_FMT, &capture->form))
@@ -1630,16 +1665,17 @@ static PALETTE_TYPE v4l2_get_pallet(unsigned long pxl_fmt)
 static int v4l2_set_pix_fmt(CvCaptureCAM_V4L* capture, unsigned long pxl_fmt)
 {
     CLEAR(capture->form);
-
     capture->form.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     capture->form.fmt.pix.pixelformat = pxl_fmt;
     capture->form.fmt.pix.field = V4L2_FIELD_ANY;
     capture->form.fmt.pix.width = DEFAULT_V4L_WIDTH;
     capture->form.fmt.pix.height = DEFAULT_V4L_HEIGHT;
 
+    /* write the new setting */
     if (-1 == ioctl(capture->deviceHandle, VIDIOC_S_FMT, &capture->form))
         return -1;
 
+    /* check the current pixel format */
     if (pxl_fmt != capture->form.fmt.pix.pixelformat)
         return -1;
 
@@ -1657,7 +1693,6 @@ static int v4l2_set_pix_fmt_auto(CvCaptureCAM_V4L* capture)
 
     fprintf(stderr,
             "VIDEOIO ERROR: V4L2: Pixel format of incoming image is unsupported by OpenCV\n");
-    v4l2_close(capture);
     return -1;
 }
 
@@ -1830,36 +1865,11 @@ static void v4l2_close(CvCaptureCAM_V4L* capture)
     /* Deallocate space - Hopefully, no leaks */
     if (capture)
     {
-        capture->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        if (-1
-                == ioctl(capture->deviceHandle, VIDIOC_STREAMOFF,
-                        &capture->type))
-        {
-            perror("Unable to stop the stream.");
-        }
-
-        for (unsigned int n_buffers = 0; n_buffers < capture->req.count;
-                ++n_buffers)
-        {
-            if (-1
-                    == munmap(capture->buffers[n_buffers].start,
-                            capture->buffers[n_buffers].length))
-            {
-                perror("munmap");
-            }
-        }
-
-        if (capture->buffers[MAX_V4L_BUFFERS].start)
-        {
-            free(capture->buffers[MAX_V4L_BUFFERS].start);
-            capture->buffers[MAX_V4L_BUFFERS].start = 0;
-        }
+    	v4l2_release_buf(capture);
 
         if (capture->deviceHandle != -1)
             close(capture->deviceHandle);
-
-        if (capture->frame.imageData)
-            cvFree(&capture->frame.imageData);
+        capture->deviceHandle = -1;
     }
 }
 
@@ -1904,8 +1914,7 @@ static CvCaptureCAM_V4L * v4l2_open(int index)
     dev = open(deviceName, O_RDWR /* required */| O_NONBLOCK, 0);
     if (-1 == dev)
     {
-        fprintf( stderr, "VIDEOIO ERROR: V4L2: index %d is not correct!\n",
-                index);
+        fprintf( stderr, "VIDEOIO ERROR: V4L2: index %d is not correct!\n", index);
         return NULL; /* Did someone ask for not correct video source number? */
     }
     /* Allocate memory for this humongus CvCaptureCAM_V4L structure that contains ALL
@@ -1934,8 +1943,7 @@ static CvCaptureCAM_V4L * v4l2_open(int index)
     }
 
     if (v4l2_set_pix_fmt_auto(capture)
-            || v4l2_set_video_size(capture, DEFAULT_V4L_WIDTH,
-            DEFAULT_V4L_HEIGHT))
+            || v4l2_set_video_size(capture, DEFAULT_V4L_WIDTH, DEFAULT_V4L_HEIGHT))
     {
         v4l2_close(capture);
         return NULL;
@@ -1978,11 +1986,19 @@ static int v4l2_set_cv_property(CvCaptureCAM_V4L* capture, int property_id,
         retval = v4l2_set_fps(capture, (int) value);
         break;
     case CV_CAP_PROP_FOURCC:
+    	/* Release buffers */
+    	if (!capture->FirstCapture)
+    		v4l2_release_buf(capture);
+
+    	/* Try set pixel format */
         if (v4l2_set_pix_fmt(capture, (unsigned int) value))
         {
-            v4l2_set_pix_fmt_auto(capture);
+            if (v4l2_set_pix_fmt_auto(capture))
+            {
+            	v4l2_close(capture);
+            	retval = -1;
+            }
         }
-        capture->FirstCapture = 1;
         break;
     default:
         retval = v4l2_set_control(capture, property_id, value);
@@ -2122,7 +2138,7 @@ class CvCaptureCAM_V4L2_CPP: CvCapture
 public:
     CvCaptureCAM_V4L2_CPP()
     {
-        captureV4L = 0;
+        captureV4L = NULL;
     }
     virtual ~CvCaptureCAM_V4L2_CPP()
     {
@@ -2145,7 +2161,7 @@ bool CvCaptureCAM_V4L2_CPP::open(int index)
 {
     close();
     captureV4L = v4l2_open(index);
-    return captureV4L != 0;
+    return captureV4L != NULL;
 }
 
 void CvCaptureCAM_V4L2_CPP::close()
