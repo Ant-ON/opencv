@@ -1698,61 +1698,23 @@ static int v4l2_set_pix_fmt_auto(CvCaptureCAM_V4L* capture)
 
 static void v4l2_scan_controls(CvCaptureCAM_V4L* capture)
 {
-    __u32 ctrl_id;
     unsigned int i;
     struct v4l2_queryctrl queryctrl;
 
-    for (ctrl_id = V4L2_CID_BASE; ctrl_id < V4L2_CID_LASTP1; ctrl_id++)
+    for (i = 0; i < CONTROL_COUNT; i++)
     {
         /* set the id we will query now */
         CLEAR(queryctrl);
-        queryctrl.id = ctrl_id;
+        queryctrl.id = CONTROL_V4L2[i];
 
         if (0 == ioctl(capture->deviceHandle, VIDIOC_QUERYCTRL, &queryctrl))
         {
             if (queryctrl.flags & V4L2_CTRL_FLAG_DISABLED)
                 continue;
 
-            for (i = 0; i < CONTROL_COUNT; i++)
-            {
-                if (queryctrl.id == CONTROL_V4L2[i])
-                {
-                    capture->v4l2_ctrl_type[i] = queryctrl.type;
-                    capture->v4l2_ctrl_min[i] = queryctrl.minimum;
-                    capture->v4l2_ctrl_max[i] = queryctrl.maximum;
-                    break;
-                }
-            }
-        } else
-        {
-            if (errno == EINVAL)
-                continue;
-            perror("VIDIOC_QUERYCTRL");
-        }
-    }
-
-    for (ctrl_id = V4L2_CID_CAMERA_CLASS_BASE;
-            ctrl_id <= V4L2_CID_AUTO_FOCUS_RANGE; ctrl_id++)
-    {
-        /* set the id we will query now */
-        CLEAR(queryctrl);
-        queryctrl.id = ctrl_id;
-
-        if (0 == ioctl(capture->deviceHandle, VIDIOC_QUERYCTRL, &queryctrl))
-        {
-            if (queryctrl.flags & V4L2_CTRL_FLAG_DISABLED)
-                continue;
-
-            for (i = 0; i < CONTROL_COUNT; i++)
-            {
-                if (queryctrl.id == CONTROL_V4L2[i])
-                {
-                    capture->v4l2_ctrl_type[i] = queryctrl.type;
-                    capture->v4l2_ctrl_min[i] = queryctrl.minimum;
-                    capture->v4l2_ctrl_max[i] = queryctrl.maximum;
-                    break;
-                }
-            }
+            capture->v4l2_ctrl_type[i] = queryctrl.type;
+            capture->v4l2_ctrl_min[i] = queryctrl.minimum;
+            capture->v4l2_ctrl_max[i] = queryctrl.maximum;
         } else
         {
             if (errno == EINVAL)
